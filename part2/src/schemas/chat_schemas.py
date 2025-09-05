@@ -33,6 +33,7 @@ class InsurancePolicySchema(BaseModel):
     treaty_premium: Optional[float] = Field(None, description="Treaty premium")
     insurance_period_start_date: dt = Field(..., description="Insurance period start date")
     insurance_period_end_date: dt = Field(..., description="Insurance period end date")
+    user_id: str = Field(..., description="User Id")
     
     @validator('insurance_period_end_date')
     def validate_end_date(cls, v, values):

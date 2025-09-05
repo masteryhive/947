@@ -35,4 +35,4 @@ class Logger:
         self.logger.error('\033[0;31m%s\033[0m' % message)
 
     def debug(self, message):
-        self.logger.info('\033[0;34m%s\033[0m' % message)
+        self.logger.debug('\033[0;34m%s\033[0m' % message)

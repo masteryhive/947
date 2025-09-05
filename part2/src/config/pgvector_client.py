@@ -11,13 +11,13 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 import json
 from src.config.settings import settings
 from src.schemas.search_schema import MatchAnyOrInterval
-from src.schemas.document_schemas import Document
+from src.schemas.document_schemas import Document, RAGPayload
 from src.config.config_helper import Configuration
 from src.config.logger import Logger
 
 logger = Logger(__name__)
 
-config = Configuration().get_config('postgres')
+config = Configuration().get_config('vdb')
 
 class PostgresVectorDB:
     def __init__(
@@ -108,12 +108,15 @@ class PostgresVectorDB:
         points_list = [
             {
                 "id": doc.get('metadata')["id"],
-                "vector": content_embedding.tolist(),  # Convert to list for JSON storage
-                "content": doc.get('page_content'),
-                "metadata": doc.get('metadata'),
+                "embedding": content_embedding.tolist(),
+                "page_content": doc.get('page_content'),
+                "document_metadata": doc.get('metadata'),
+                "document_type": doc.get('metadata', {}).get('document_type', ''),
+                "user_id": doc.get('metadata', {}).get('user_id', '')
             }
             for (doc, content_embedding) in zip(docs, embeddings)
         ]
+
         logger.info("Generating points")
         return points_list
 
@@ -130,10 +133,12 @@ class PostgresVectorDB:
             
             create_table_query = f"""
             CREATE TABLE IF NOT EXISTS {self.__collection_name} (
-                id UUID PRIMARY KEY,
-                vector vector({vector_dim}),
-                content TEXT,
-                metadata JSONB,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                embedding vector({vector_dim}),
+                page_content TEXT,
+                document_metadata JSONB,
+                document_type VARCHAR(50),
+                user_id VARCHAR(100),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -143,15 +148,21 @@ class PostgresVectorDB:
             
             # Create indexes for better performance
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self.__collection_name}_vector 
-                ON {self.__collection_name} USING ivfflat (vector vector_cosine_ops) 
+                CREATE INDEX IF NOT EXISTS idx_{self.__collection_name}_embedding
+                ON {self.__collection_name} USING ivfflat (embedding vector_cosine_ops)
                 WITH (lists = 100);
             """)
-            
+
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self.__collection_name}_metadata 
-                ON {self.__collection_name} USING gin (metadata);
+                CREATE INDEX IF NOT EXISTS idx_{self.__collection_name}_document_metadata
+                ON {self.__collection_name} USING gin (document_metadata);
             """)
+
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self.__collection_name}_user_id
+                ON {self.__collection_name} USING btree (user_id);
+            """)
+
             
             logger.info(f"Collection '{self.__collection_name}' ready for use.")
 
@@ -199,13 +210,12 @@ class PostgresVectorDB:
             )
             logger.info(f"Deleted '{ids}' from '{self.__collection_name}' table.")
 
-    @retry(stop=stop_after_attempt(4), wait=wait_fixed(0.7))
     async def batch_update(self, update_operations: List[Dict[str, Any]]) -> None:
         """
         Perform batch updates on the collection.
         """
         pool = await self._get_connection_pool()
-        
+
         try:
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -214,21 +224,21 @@ class PostgresVectorDB:
                             # Update vectors for specific points
                             for point_id, vector in operation['data']:
                                 await conn.execute(
-                                    f"UPDATE {self.__collection_name} SET vector = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-                                    vector, uuid.UUID(str(point_id))
+                                    f"UPDATE {self.__collection_name} SET embedding = $1::vector, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                                    str(vector), uuid.UUID(str(point_id))
                                 )
                         elif operation['type'] == 'set_payload':
                             # Update metadata for specific points
                             for point_id in operation['points']:
                                 await conn.execute(
-                                    f"UPDATE {self.__collection_name} SET metadata = metadata || $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                                    f"UPDATE {self.__collection_name} SET document_metadata = document_metadata || $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                                     json.dumps(operation['payload']), uuid.UUID(str(point_id))
                                 )
                         else:
                             logger.warning(f"Unsupported operation type: {operation['type']}")
-            
+
             logger.info("Batch update completed successfully.")
-                            
+
         except Exception as ex:
             logger.error(f"Batch update failed due to error: {str(ex)}")
             raise
@@ -240,53 +250,89 @@ class PostgresVectorDB:
         @retry(stop=stop_after_attempt(self.__max_attempts), wait=wait_fixed(self.__wait_time_seconds))
         async def upsert_batch(batch_data: List[Dict[str, Any]]) -> None:
             pool = await self._get_connection_pool()
-            
+
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     upsert_query = f"""
-                    INSERT INTO {self.__collection_name} (id, vector, content, metadata, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (id) 
-                    DO UPDATE SET 
-                        vector = EXCLUDED.vector,
-                        content = EXCLUDED.content,
-                        metadata = EXCLUDED.metadata,
+                    INSERT INTO {self.__collection_name} (
+                        id, embedding, page_content, document_metadata,
+                        document_type, user_id, created_at, updated_at
+                    )
+                    VALUES ($1, $2::vector, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id)
+                    DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        page_content = EXCLUDED.page_content,
+                        document_metadata = EXCLUDED.document_metadata,
+                        document_type = EXCLUDED.document_type,
+                        user_id = EXCLUDED.user_id,
                         updated_at = CURRENT_TIMESTAMP
                     """
-                    
+
                     for point in batch_data:
+                        embedding = point.get('embedding', point.get('vector'))
+                        document_metadata = point.get('document_metadata', point.get('metadata', {}))
+                        document_type = document_metadata.get('document_type', point.get('document_type', ''))
+                        user_id = document_metadata.get('user_id', point.get('user_id', ''))
+
+                        # Convert embedding to string format for PostgreSQL vector type
+                        if isinstance(embedding, list):
+                            embedding_str = str(embedding)
+                        else:
+                            embedding_str = str(embedding.tolist())
+
                         await conn.execute(
                             upsert_query,
                             uuid.UUID(str(point['id'])),
-                            point['vector'],
-                            point['content'],
-                            json.dumps(point['metadata'])
+                            embedding_str,
+                            point.get('page_content', point.get('content', '')),
+                            json.dumps(document_metadata),
+                            document_type,
+                            user_id
                         )
 
         @retry(stop=stop_after_attempt(self.__max_attempts), wait=wait_fixed(self.__wait_time_seconds))
         async def upsert_single(points_list: List[Dict[str, Any]]) -> None:
             pool = await self._get_connection_pool()
-            
+
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     upsert_query = f"""
-                    INSERT INTO {self.__collection_name} (id, vector, content, metadata, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (id) 
-                    DO UPDATE SET 
-                        vector = EXCLUDED.vector,
-                        content = EXCLUDED.content,
-                        metadata = EXCLUDED.metadata,
+                    INSERT INTO {self.__collection_name} (
+                        id, embedding, page_content, document_metadata,
+                        document_type, user_id, created_at, updated_at
+                    )
+                    VALUES ($1, $2::vector, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id)
+                    DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        page_content = EXCLUDED.page_content,
+                        document_metadata = EXCLUDED.document_metadata,
+                        document_type = EXCLUDED.document_type,
+                        user_id = EXCLUDED.user_id,
                         updated_at = CURRENT_TIMESTAMP
                     """
-                    
+
                     for point in points_list:
+                        embedding = point.get('embedding', point.get('vector'))
+                        document_metadata = point.get('document_metadata', point.get('metadata', {}))
+                        document_type = document_metadata.get('document_type', point.get('document_type', ''))
+                        user_id = document_metadata.get('user_id', point.get('user_id', ''))
+
+                        # Convert embedding to string format for PostgreSQL vector type
+                        if isinstance(embedding, list):
+                            embedding_str = str(embedding)
+                        else:
+                            embedding_str = str(embedding.tolist())
+
                         await conn.execute(
                             upsert_query,
                             uuid.UUID(str(point['id'])),
-                            point['vector'],
-                            point['content'],
-                            json.dumps(point['metadata'])
+                            embedding_str,
+                            point.get('page_content', point.get('content', '')),
+                            json.dumps(document_metadata),
+                            document_type,
+                            user_id
                         )
         
         if is_batch:
@@ -303,10 +349,8 @@ class PostgresVectorDB:
         if ids is None:
             logger.warning("No ID provided. Nothing to retrieve.")
             return None
-
         if not isinstance(ids, list):
             ids = [ids]
-
         # Convert to UUIDs
         uuid_ids = []
         for id_val in ids:
@@ -314,31 +358,37 @@ class PostgresVectorDB:
                 uuid_ids.append(uuid.UUID(id_val))
             else:
                 uuid_ids.append(id_val)
-
         for attempt in range(retries):
             try:
                 pool = await self._get_connection_pool()
                 async with pool.acquire() as conn:
                     query = f"""
-                    SELECT id, content, metadata 
-                    FROM {self.__collection_name} 
+                    SELECT id, page_content, document_metadata, document_type, user_id
+                    FROM {self.__collection_name}
                     WHERE id = ANY($1)
                     """
-                    
+
                     rows = await conn.fetch(query, uuid_ids)
-                    
+
                     results = []
                     for row in rows:
+                        metadata = json.loads(row['document_metadata'])
+                        # Add document_type and user_id to metadata if they're not already there
+                        if 'document_type' not in metadata:
+                            metadata['document_type'] = row['document_type']
+                        if 'user_id' not in metadata:
+                            metadata['user_id'] = row['user_id']
+
                         results.append({
                             'id': str(row['id']),
                             'payload': {
-                                self.__content_payload_key: row['content'],
-                                self.__metadata_payload_key: json.loads(row['metadata'])
+                                self.__content_payload_key: row['page_content'],
+                                self.__metadata_payload_key: metadata
                             }
                         })
-                    
+
                     return results
-                    
+
             except Exception as ex:
                 logger.error(f"Error retrieving data on attempt {attempt + 1}: {ex}")
                 if attempt < retries - 1:
@@ -354,19 +404,19 @@ class PostgresVectorDB:
         """
         if filters is None:
             return ""
-        
+
         conditions = []
-        
+
         for field, value in filters.items():
             if value.any is not None:
                 # Handle array matching - PostgreSQL JSONB array contains
                 placeholders = ', '.join([f"'{val}'" for val in value.any])
-                conditions.append(f"(metadata->>'{field}')::text = ANY(ARRAY[{placeholders}])")
-                
+                conditions.append(f"(document_metadata->>'{field}')::text = ANY(ARRAY[{placeholders}])")
+
             elif any([value.gt, value.gte, value.lt, value.lte]):
                 # Handle range conditions for dates
-                field_path = f"(metadata->>'{field}')::timestamp"
-                
+                field_path = f"(document_metadata->>'{field}')::timestamp"
+
                 if value.gt:
                     conditions.append(f"{field_path} > '{value.gt}'")
                 if value.gte:
@@ -375,7 +425,7 @@ class PostgresVectorDB:
                     conditions.append(f"{field_path} < '{value.lt}'")
                 if value.lte:
                     conditions.append(f"{field_path} <= '{value.lte}'")
-        
+
         if conditions:
             return " AND " + " AND ".join(conditions)
         return ""
@@ -386,46 +436,51 @@ class PostgresVectorDB:
         """
         if limit is None:
             limit = self.limit
-        
+
         # Encode the query
         query_vector = self.__sentence_model.encode(query)
-        
+
         # Build filter conditions
         filter_clause = self.refine(filters)
-        
+
         logger.info(f"Query: {query}")
         logger.info(f"Filters: {filter_clause}")
-
         try:
             pool = await self._get_connection_pool()
             async with pool.acquire() as conn:
                 # PostgreSQL query with cosine similarity
                 search_query = f"""
-                SELECT 
+                SELECT
                     id,
-                    content,
-                    metadata,
-                    1 - (vector <=> $1::vector) as similarity_score
+                    page_content,
+                    document_metadata,
+                    document_type,
+                    user_id,
+                    1 - (embedding <=> $1::vector) as similarity_score
                 FROM {self.__collection_name}
                 WHERE 1=1 {filter_clause}
-                ORDER BY vector <=> $1::vector
+                ORDER BY embedding <=> $1::vector
                 LIMIT $2
                 """
-                
-                rows = await conn.fetch(search_query, query_vector.tolist(), limit)
-                
+
+                rows = await conn.fetch(search_query, str(query_vector.tolist()), limit)
+
                 # Convert results to Document objects
                 results = [
                     Document(
-                        page_content=row['content'],
-                        metadata=json.loads(row['metadata']),
+                        page_content=row['page_content'],
+                        metadata={
+                            **json.loads(row['document_metadata']),
+                            'document_type': row['document_type'],
+                            'user_id': row['user_id']
+                        },
                         score={self.__score_key: float(row['similarity_score'])},
                     )
                     for row in rows
                 ]
-                
+
                 return results
-                
+
         except Exception as ex:
             logger.error(f"Search failed: {str(ex)}")
             # Try to create collection if it doesn't exist
@@ -459,7 +514,7 @@ class PostgresVectorDB:
 
 
 # Updated RAG Manager to use PostgreSQL
-class PostgreSQLRAGManager:
+class RAGManager:
     keys_to_ignore = ['user_id', 'document_type', 'memory_type', 'collection_name']
 
     def __init__(self, collection_name: str = None, model_name: str = None) -> None:
@@ -501,6 +556,8 @@ class PostgreSQLRAGManager:
             data=data
         )
         formatted_content = payload.text
+        document_metadata = payload.metadata
+        document_metadata['user_id'] = str(user_id)
         return [{"page_content": formatted_content, "metadata": payload.metadata}]
 
     async def insert(self, data: List[Dict[str, Any]], user_id: Union[uuid.UUID, str] = None) -> Optional[Union[str, List[str]]]:
@@ -514,6 +571,7 @@ class PostgreSQLRAGManager:
                 new_uuid = self.generate_id(item)
                 doc = self.get_document(data=item, id=new_uuid, user_id=user_id)
                 docs_to_add.extend(doc)
+                logger.debug(docs_to_add)
             
             if docs_to_add:
                 await self.vectordb.insert(docs_to_add, is_batch=True)
@@ -587,7 +645,10 @@ class PostgreSQLRAGManager:
 
         documents = await self.vectordb.search(query, filters=filters)
         if not documents:
+            logger.info("No documents returned from vector search")
             return []
+
+        logger.info(f"Found {len(documents)} documents before filtering")
 
         # Apply threshold filtering
         if date:
@@ -595,11 +656,15 @@ class PostgreSQLRAGManager:
         else:
             search_threshold = threshold if threshold is not None else self.threshold
 
-        filtered_documents = filter(lambda doc: doc.score[self.__score_key] >= search_threshold, documents)
+        # Fix the score key reference
+        score_key = self.vectordb._PostgresVectorDB__score_key
+        filtered_documents = [doc for doc in documents if doc.score[score_key] >= search_threshold]
+        
+        logger.info(f"Found {len(filtered_documents)} documents after threshold filtering (threshold: {search_threshold})")
         
         result = [{
-            k: v for k, v in metadata.items() if k not in self.keys_to_ignore
-        } for metadata in [document.metadata for document in list(filtered_documents)]]
+            k: v for k, v in document.metadata.items() if k not in self.keys_to_ignore
+        } for document in filtered_documents]
 
         if ref_time:
             if isinstance(ref_time, str):
@@ -657,6 +722,69 @@ class PostgreSQLRAGManager:
     def __exit__(self, exc_type, exc_val, exc_tb):
         asyncio.create_task(self.close())
 
+class RAGFormatter:
+    """
+    A utility class providing static methods to create document payloads for storing memories.
+
+    Methods:
+    - create_payload: Creates a document_schema.RAGPayload instance from input data.
+    """
+    @staticmethod
+    def create_payload(
+        id: Union[uuid.UUID, str],
+        user_id: str,
+        collection_name: str,
+        data: Dict[str, Any]
+    ) -> RAGPayload:
+        """
+        Creates a document_schems.RAGPayload instance used for storing memory data.
+
+        Args:
+            id (Union[uuid.UUID, str]): Unique identifier for the document.
+            user_id (str): Identifier for the user associated with the document.
+            collection_name (str): Name of the collection to store the document in.
+            data (Dict[str, Any]): The content of the document.
+
+        Returns:
+            document_schems.RAGPayload: An instance containing the formatted document data.
+        """
+        if not id:
+            id = str(uuid.uuid4())
+
+        screen_name = data.get('screen_name', '')
+        data_source = data.get('dataSource', '')
+        author_name = data.get('author_name', '')
+        text = data.get('text', '') 
+
+        formatted_content = f"{text} {screen_name} {data_source} {author_name}".strip()
+
+        # Append the id to the metadata
+        data['id'] = str(id)
+        data['document_type'] = collection_name.replace("-", "_")
+        data['memory_type'] = "long_term_memory"
+        data['collection_name'] = collection_name
+
+        if 'user_id' in data:
+            data['user_id'] = user_id
+
+        # Remove unwanted fields from metadata
+        if 'tweetID' in data:
+            data.pop('tweetID', None)
+        if 'tweet_id' in data:
+            data.pop('tweet_id', None)
+        if 'dbID' in data:
+            data.pop('dbID', None)
+
+        return RAGPayload(
+            id=str(id),
+            user_id=user_id,
+            text=formatted_content,
+            document_type="preference",
+            memory_type="long_term_memory",
+            collection_name=collection_name,
+            metadata=data  # Store the entire payload in metadata
+        )
+
 
 # Database setup and migration utilities
 class PostgreSQLVectorSetup:
@@ -668,14 +796,14 @@ class PostgreSQLVectorSetup:
         
         # Connection for initial setup (might need superuser privileges)
         admin_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', 5432)),
-            'database': 'postgres',  # Connect to default database first
-            'user': os.getenv('POSTGRES_ADMIN_USER', 'postgres'),
-            'password': os.getenv('POSTGRES_ADMIN_PASSWORD'),
+            'host': settings.POSTGRES_HOST,
+            'port': int(settings.POSTGRES_PORT),
+            'database': 'postgres', # Connect to default database first #settings.POSTGRES_DB, 
+            'user': settings.POSTGRES_USER,
+            'password': settings.POSTGRES_PASSWORD,
         }
         
-        target_db = os.getenv('POSTGRES_DB')
+        target_db = settings.POSTGRES_DB
         
         try:
             # Connect to create database if it doesn't exist
@@ -712,62 +840,3 @@ class PostgreSQLVectorSetup:
         except Exception as e:
             logger.error(f"Database setup failed: {e}")
             raise
-
-
-# Example usage and testing
-async def test_postgresql_rag():
-    """Test function to demonstrate PostgreSQL RAG functionality"""
-    
-    # Setup database first
-    await PostgreSQLVectorSetup.setup_database()
-    
-    # Initialize RAG manager
-    rag_manager = PostgreSQLRAGManager(
-        collection_name="test_documents",
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    
-    # Test data
-    test_data = [
-        {
-            "text": "This is a test document about artificial intelligence and machine learning.",
-            "author_name": "Test Author",
-            "timestamp": "2025-01-01T10:00:00Z",
-            "category": "AI"
-        },
-        {
-            "text": "Another document discussing natural language processing and vector databases.",
-            "author_name": "Another Author", 
-            "timestamp": "2025-01-02T15:30:00Z",
-            "category": "NLP"
-        }
-    ]
-    
-    try:
-        # Insert test data
-        result_ids = await rag_manager.insert(test_data, user_id="test_user_123")
-        logger.info(f"Inserted documents with IDs: {result_ids}")
-        
-        # Search test
-        search_results = await rag_manager.search(
-            query="artificial intelligence",
-            user_id="test_user_123"
-        )
-        logger.info(f"Search results: {len(search_results)} documents found")
-        
-        # Search with date filter
-        filtered_results = await rag_manager.search(
-            query="machine learning",
-            user_id="test_user_123",
-            date="2025-01-01T00:00:00Z",
-            date_operator="gte"
-        )
-        logger.info(f"Filtered search results: {len(filtered_results)} documents found")
-        
-    finally:
-        await rag_manager.close()
-
-
-if __name__ == "__main__":
-    # Run the test
-    asyncio.run(test_postgresql_rag())

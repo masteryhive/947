@@ -8,6 +8,10 @@ start_prod:
 	@echo "Running app in production..."
 	poetry run gunicorn -w 2 -k uvicorn.workers.UvicornWorker src.main:app -b 0.0.0.0:8088
 
+run_postgresdb:
+	docker-compose -f docker-compose.yml up
+
+
 docker_up:
 	@echo "Starting Docker Compose (dev/prod combined)..."
 	docker-compose up

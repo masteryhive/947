@@ -27,71 +27,21 @@ import uuid
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
 from io import BytesIO
-# from app.services.vector_service import PostgresVectorService
-# from app.schemas.models import InsurancePolicySchema
+from src.config.pgvector_policy_client import PostgresVectorClient
 
 logger = Logger(__name__)
 
 class ChatService:
     def __init__(self):
-        # self.vector_service = PostgresVectorService()
-        self.required_columns = {
-            'policy_number': str,
-            'insured_name': str,
-            'sum_insured': float,
-            'premium': float
-        }
-        self.optional_columns = {
-            'own_retention_ppn': float,
-            'own_retention_sum_insured': float,
-            'own_retention_premium': float,
-            'treaty_ppn': float,
-            'treaty_sum_insured': float,
-            'treaty_premium': float,
-            'period_of_insurance': str,  # Will be split into start/end dates
-        }
+        self.vector_service = PostgresVectorClient()
+        pass
 
     async def query(
-        request: Request
+        request: Request,
+        user_id
     ):
         pass
         # try:
-        #     form_data = await request.form()
-        #     file_str = form_data.get("file")
-        #     chat_str = form_data.get("chat")
-            
-        #     if not chat_str:
-        #         raise ChatNotFoundException("Missing 'chat' field in form data")
-
-        #     chat_dict = json.loads(chat_str)
-        #     content = chat_dict.setdefault("content", {})
-        #     if not file_str and not content.get("message"):
-        #         raise ChatNotFoundException("You must enter message before proceeding")
-        #     elif file_str:
-        #         raw = await file_str.read()
-        #         file_ext = file_str.filename.rsplit(".", 1)[-1].lower()
-        #         AppUtil.embed_document(
-        #             file_bytes=raw,
-        #             file_extension=file_ext,
-        #             document_type=document_type,
-        #             user_id=content.get("user_id")
-        #         )
-            
-        #     chat_request = chat_schemas.ChatRequest(**chat_dict)
-        #     chat_data = chat_request.model_dump()
-        #     chat_input = AppUtil.extract(chat_data)
-        #     logger.info(f"chat_input {chat_input}")
-        #     (
-        #         session_id, message, category
-        #     ) = AppUtil._extract_chat_input(chat_input)
-
-        #     central_agent = MAPAgent(
-        #         vdb_doc_upload_client=vdb_doc_upload_client,
-        #         actions=actions[0] if actions else None
-        #     )
-        #     session_id, result = await central_agent(
-        #         message, user_id=user['id'], session_id=session_id
-        #     )
         #     logger.info("Chat processed successfully")
         # except Exception as ex:
         #     logger.error(f"Processing Sessions -> API v1/chats/session/ask-agent/: {ex}")
@@ -101,33 +51,79 @@ class ChatService:
         #     "content": result.content if result is not None else None
         # }
     
-    async def ingest_excel(self, file, chunk_size, chunk_overlap) -> Dict[str, Any]:
+    async def ingest_excel(self, file, user_id, chunk_size, chunk_overlap) -> Dict[str, Any]:
         """
         Perform insert document into the vector database data for a specific collection.
         """
-        try:
-            if not file.filename.endswith(('.xlsx', '.xls')):
-                raise RecordNotAllowedException("File must be an Excel file (.xlsx or .xls)")
-            # Check file size (limit to 50MB by default)
-            max_size = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
-            file_content = await file.read()
-            
-            if len(file_content) > max_size:
-                raise RecordNotAllowedException(f"File too large. Maximum size is {max_size // (1024*1024)}MB")
-            print(file)
-            # client = cache.get(collection_name)
-            # result = await client.insert_document(file, chunk_size, chunk_overlap)
-            logger.info("document inserted successfully")
-        except Exception as ex:
-            logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
-            raise InternalServerException()
+        # try:
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            raise RecordNotAllowedException("File must be an Excel file (.xlsx or .xls)")
+        # Check file size (limit to 50MB by default)
+        max_size = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
+        file_content = await file.read()
+        
+        if len(file_content) > max_size:
+            raise RecordNotAllowedException(f"File too large. Maximum size is {max_size // (1024*1024)}MB")
+        result = await self.process_excel_file(file_content, user_id)
+        logger.info("document inserted successfully")
+        # except Exception as ex:
+        #     logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
+        #     raise InternalServerException()
 
-        # return result
-    
-    def process_excel_file(
+        return result
+
+    async def process_excel_file(
         self,
         file_content: bytes,
-        header_row_index: int = 6, 
+        user_id: Union[str, uuid.UUID]
+    ) -> Optional[pd.DataFrame]:
+        """Process uploaded Excel file and ingest data"""
+
+        start_time = datetime.now()
+        ingestion_id = str(uuid.uuid4())
+        errors = []
+        records_processed = 0
+        records_inserted = 0
+
+        df = pd.read_excel(BytesIO(file_content))
+        df_cleaned = self._validate_and_clean_data(df, errors)
+        records_processed = len(df)
+        # Convert to policy objects
+        policies = []
+        for index, row in df_cleaned.iterrows():
+            try:
+                policy_data = row.to_dict()
+                policy_data["user_id"] = user_id
+                policy_schema = chat_schemas.InsurancePolicySchema(**policy_data)
+                policies.append(policy_schema.dict())
+            except Exception as e:
+                errors.append(f"Row {index + 2}: {str(e)}")
+        
+        for policy_data in policies:
+            # try:
+            await self.vector_service.insert_policy(policy_data)
+                # records_inserted += 1
+            # except Exception as e:
+            #     errors.append(
+            #         f"Failed to insert policy {policy_data.get('policy_number', 'unknown')}: {str(e)}"
+            #     )
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return {
+            'message': f'Successfully processed {records_inserted} out of {records_processed} records',
+            'records_processed': records_processed,
+            'records_inserted': records_inserted,
+            'errors': errors,
+            'processing_time': round(processing_time, 2),
+            'ingestion_id': ingestion_id
+        }
+    
+    def _validate_and_clean_data(
+        self,
+        df: pd.DataFrame,
+        errors,
+        header_row_index: int = 6,
     ) -> Optional[pd.DataFrame]:
         """
         Process insurance dataframe that's already loaded in memory.
@@ -135,22 +131,18 @@ class ChatService:
         Args:
             df (pd.DataFrame): Input dataframe with insurance data
             header_row_index (int): Row index containing column headers (default: 6)
-            debug (bool): Whether to print debug information
             
         Returns:
             Optional[pd.DataFrame]: Processed dataframe matching database schema,
                                 or None if processing fails
         """
         try:
-            df = pd.read_excel(BytesIO(file_content))
-
-            df_clean = self.extract_header_and_data(df, header_row_index)
+            df_clean = self.extract_header_and_data(df, errors, header_row_index)
             cleaned_data = self.map_columns_to_schema(df_clean)
             filtered_data = self.filter_data_rows(cleaned_data)
-            validated_df = self.validate_schema(filtered_data)
+            validated_df = self.validate_schema(filtered_data, errors)
             
             return validated_df
-            
         except Exception as e:
             logger.error(f"Error processing insurance dataframe: {str(e)}")
             return InternalServerException()
@@ -203,13 +195,13 @@ class ChatService:
         
         # Ensure we're working with a Series
         if isinstance(series, pd.DataFrame):
-            print(f"Warning: Got DataFrame instead of Series, taking first column")
+            logger.warning("Got DataFrame instead of Series, taking first column")
             series = series.iloc[:, 0]
         
         return pd.to_numeric(series.astype(str).str.replace(',', ''), errors='coerce')
 
 
-    def extract_header_and_data(self, df: pd.DataFrame, header_row_index: int = 6) -> pd.DataFrame:
+    def extract_header_and_data(self, df: pd.DataFrame, errors, header_row_index: int = 6) -> pd.DataFrame:
         """
         Extract column headers from specified row and return cleaned dataframe with data rows.
         
@@ -220,19 +212,24 @@ class ChatService:
         Returns:
             pd.DataFrame: Cleaned dataframe with proper column headers and data rows only
         """
-        df_clean = df.copy()
-        
-        # Extract column headers from specified row
-        if len(df_clean) > header_row_index:
-            column_headers = df_clean.iloc[header_row_index].values
-            df_clean.columns = column_headers
+        try:
+            df_clean = df.copy()
             
-            # Keep only data rows (from header_row_index + 1 onwards)
-            df_clean = df_clean.iloc[header_row_index + 1:].copy()
-        
-        # Reset index and remove empty rows
-        df_clean.reset_index(drop=True, inplace=True)
-        df_clean = df_clean.dropna(how='all')
+            # Extract column headers from specified row
+            if len(df_clean) > header_row_index:
+                column_headers = df_clean.iloc[header_row_index].values
+                df_clean.columns = column_headers
+                
+                # Keep only data rows (from header_row_index + 1 onwards)
+                df_clean = df_clean.iloc[header_row_index + 1:].copy()
+            
+            # Reset index and remove empty rows
+            df_clean.reset_index(drop=True, inplace=True)
+            df_clean = df_clean.dropna(how='all')
+        except Exception as ex:
+            err_msg = str(ex)
+            errors.append(err_msg)
+            logger.error(err_msg)
         
         return df_clean
 
@@ -243,7 +240,6 @@ class ChatService:
         
         Args:
             df_clean (pd.DataFrame): Cleaned dataframe with proper headers
-            debug (bool): Whether to print debug information
             
         Returns:
             pd.DataFrame: Dataframe with columns mapped to schema requirements
@@ -263,8 +259,8 @@ class ChatService:
             - Column 11: SUM INSURED (treaty) → treaty_sum_insured
             - Column 12: PREMIUM (treaty) → treaty_premium
         """
-        logger.info("Column names:", df_clean.columns.tolist())
-        logger.info("Number of columns:", len(df_clean.columns))
+        logger.debug(f"Column names: {df_clean.columns.tolist()}")
+        logger.debug(f"Number of columns: {len(df_clean.columns)}")
         
         cleaned_data = pd.DataFrame()
         
@@ -313,7 +309,6 @@ class ChatService:
         
         Args:
             df (pd.DataFrame): Dataframe with mapped columns
-            debug (bool): Whether to print debug information
             
         Returns:
             pd.DataFrame: Filtered dataframe with only valid data rows
@@ -329,7 +324,7 @@ class ChatService:
         return df_filtered
 
 
-    def validate_schema(self, df: pd.DataFrame) -> pd.DataFrame:
+    def validate_schema(self, df: pd.DataFrame, errors) -> pd.DataFrame:
         """
         Validate that the dataframe matches the required database schema.
         
@@ -362,7 +357,9 @@ class ChatService:
         
         missing_columns = set(required_columns) - set(df.columns)
         if missing_columns:
-            logger.error(f"Warning: Missing columns: {missing_columns}")
+            err_msg = f"Missing columns: {missing_columns}"
+            errors.append(err_msg)
+            logger.error(err_msg)
         
         # Ensure proper data types for numeric columns
         numeric_columns = [

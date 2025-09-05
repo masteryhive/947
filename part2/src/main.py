@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# from src.utils.connection import app_lifespan
+from src.utils.connection import app_lifespan
 from src.exceptions.custom_exception import (
     RecordNotFoundException, InternalServerException, AuthenticationFailException,
     UnsupportedFileFormatException, APIAuthenticationFailException
@@ -12,7 +12,7 @@ from src.chat.controller import chat
 app = FastAPI(
     title="Insurance RAG API", version="0.0.1", root_path="/v1", 
     description="Production-ready Agentic RAG system for insurance policy management",
-    # lifespan=app_lifespan,
+    lifespan=app_lifespan
 )
 
 allow = ["*"]

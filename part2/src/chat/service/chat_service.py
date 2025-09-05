@@ -13,7 +13,6 @@ from src.exceptions.custom_exception import (
 )
 import base64
 # from src.map_ai import MAPAgent
-from src.chat.repository import chat_repository
 from src.utils.app_notification_message import NotificationMessage
 from src.schemas import monitor_schemas, chat_schemas
 from src.utils.app_utils import  AppUtil
@@ -55,20 +54,20 @@ class ChatService:
         """
         Perform insert document into the vector database data for a specific collection.
         """
-        # try:
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            raise RecordNotAllowedException("File must be an Excel file (.xlsx or .xls)")
-        # Check file size (limit to 50MB by default)
-        max_size = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
-        file_content = await file.read()
-        
-        if len(file_content) > max_size:
-            raise RecordNotAllowedException(f"File too large. Maximum size is {max_size // (1024*1024)}MB")
-        result = await self.process_excel_file(file_content, user_id)
-        logger.info("document inserted successfully")
-        # except Exception as ex:
-        #     logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
-        #     raise InternalServerException()
+        try:
+            if not file.filename.endswith(('.xlsx', '.xls')):
+                raise RecordNotAllowedException("File must be an Excel file (.xlsx or .xls)")
+            # Check file size (limit to 50MB by default)
+            max_size = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
+            file_content = await file.read()
+            
+            if len(file_content) > max_size:
+                raise RecordNotAllowedException(f"File too large. Maximum size is {max_size // (1024*1024)}MB")
+            result = await self.process_excel_file(file_content, user_id)
+            logger.info("document inserted successfully")
+        except Exception as ex:
+            logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
+            raise InternalServerException()
         return result
 
     async def process_excel_file(

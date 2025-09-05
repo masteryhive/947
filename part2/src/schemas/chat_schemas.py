@@ -3,6 +3,8 @@ from typing import List, Dict
 from datetime import datetime as dt
 from uuid import UUID, uuid4
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 from src.schemas import monitor_schemas, chat_schemas, search_schema
 from typing import Optional, Union, Any, List, Literal, Dict
 from datetime import datetime as dt, timezone, time
@@ -40,6 +42,24 @@ class InsurancePolicySchema(BaseModel):
         if 'insurance_period_start_date' in values and v <= values['insurance_period_start_date']:
             raise ValueError('End date must be after start date')
         return v
+    
+class QueryType(Enum):
+    SPECIFIC_POLICY = "specific_policy"
+    AGGREGATE_ANALYSIS = "aggregate_analysis"
+    COMPARISON = "comparison" 
+    CALCULATION = "calculation"
+    GENERAL_INFO = "general_info"
+    CLAIMS_ANALYSIS = "claims_analysis"
+
+@dataclass
+class QueryClassification:
+    query_type: QueryType
+    entities: List[str]
+    numerical_filters: Dict[str, Any]
+    date_filters: Dict[str, Any]
+    requires_calculation: bool
+    calculation_type: Optional[str] = None
+    confidence: float = 0.0
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Natural language question")

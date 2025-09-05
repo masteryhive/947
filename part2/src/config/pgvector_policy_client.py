@@ -407,7 +407,7 @@ class PostgresVectorClient:
             ORDER BY content_vector <=> $1::vector
             LIMIT $2
         '''
-
+        
         async with db_manager.get_connection() as conn:
             rows = await conn.fetch(search_query, *params)
 
@@ -415,8 +415,22 @@ class PostgresVectorClient:
             for row in rows:
                 result = dict(row)
                 result['id'] = str(result['id'])
-                # Updated to use policy_metadata
+                result.pop('content_vector')
+                
+                # Keep only metadata
                 result['policy_metadata'] = json.loads(result['policy_metadata']) if result['policy_metadata'] else {}
+                result['policy_metadata'].pop('user_id')
+
+                # Remove top-level duplicate policy fields
+                redundant_keys = [
+                    "policy_number", "insured_name", "sum_insured", "premium",
+                    "own_retention_ppn", "own_retention_sum_insured", "own_retention_premium",
+                    "treaty_ppn", "treaty_sum_insured", "treaty_premium",
+                    "insurance_period_start_date", "insurance_period_end_date",
+                    "created_at", "updated_at"
+                ]
+                for key in redundant_keys:
+                    result.pop(key, None)
                 results.append(result)
 
             return results

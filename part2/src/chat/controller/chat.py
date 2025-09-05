@@ -11,7 +11,7 @@ chat_router = APIRouter(prefix="/chats", tags=["Chat Session"])
 @chat_router.post(
     '/ask-agent/{user_id}',
     response_model=Dict[str, Union[str, List]],
-    summary="Ask MAP",
+    summary="Ask Agentic RAG",
     status_code=status.HTTP_200_OK
 )
 async def ask_agent(

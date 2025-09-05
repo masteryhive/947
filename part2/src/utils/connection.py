@@ -19,9 +19,9 @@ async def app_lifespan(app: FastAPI):
     try:
         await db_manager.create_pool()
         vector_service = PostgresVectorClient()
-        await vector_service.recreate_table()
+        await vector_service.create_tables()
 
-        # Initialize services    
+        # Initialize services
         # rag_service = AgenticRAGService()
         monitor_service = MonitorService()
         chat_service = ChatService()

@@ -41,19 +41,15 @@ class ChatService:
         user_id
     ):
         try:
-            print(user_id)
-            print(chat)
-            await self.vector_service.search_policies(
+            result = await self.vector_service.search_policies(
                 query=chat.question
             )
             logger.info("Chat processed successfully")
         except Exception as ex:
             logger.error(f"Processing Sessions -> API v1/chats/session/ask-agent/: {ex}")
             raise InternalServerException()
-
-        # return {
-        #     "content": result.content if result is not None else None
-        # }
+        
+        return result
     
     async def ingest_excel(self, file, user_id, chunk_size, chunk_overlap) -> Dict[str, Any]:
         """

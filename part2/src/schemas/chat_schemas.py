@@ -71,7 +71,6 @@ class QueryResponse(BaseModel):
     answer: str = Field(..., description="Generated answer")
     sources: List[Dict[str, Any]] = Field(..., description="Source documents used")
     confidence_score: Optional[float] = Field(None, description="Confidence in the answer")
-    processing_time: float = Field(..., description="Time taken to process query")
     query_id: str = Field(..., description="Unique query identifier")
 
 class IngestionRequest(BaseModel):

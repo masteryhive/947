@@ -27,12 +27,14 @@ from typing import List, Dict, Any, Tuple
 from datetime import datetime
 from io import BytesIO
 from src.config.pgvector_policy_client import PostgresVectorClient
+from src.ai_agent.agentic_rag_service import AgenticRAGService
 
 logger = Logger(__name__)
 
 class ChatService:
     def __init__(self):
         self.vector_service = PostgresVectorClient()
+        self.rag_service = AgenticRAGService()
 
     async def query(
         self,
@@ -40,8 +42,9 @@ class ChatService:
         user_id
     ):
         try:
-            result = await self.vector_service.search_policies(
-                query=chat.question
+            result = await self.handle_user_query(
+                query=chat.question,
+                user_id=user_id
             )
             logger.info("Chat processed successfully")
         except Exception as ex:
@@ -69,6 +72,46 @@ class ChatService:
             logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
             raise InternalServerException()
         return result
+    
+    async def handle_user_query(self, query: str, user_id: str) -> Dict[str, Any]:
+        """Handle a user query through the enhanced RAG pipeline"""
+        
+        try:
+            # Process the query
+            result = await self.rag_service.process_query(query, user_id)
+            return {
+                'success': True,
+                'answer': result['answer'],
+                'metadata': {
+                    'query_type': result['classification']['query_type'],
+                    'documents_analyzed': result['documents_used'],
+                    'confidence_level': result['confidence']
+                },
+                'sources': result.get('search_params', {}),
+                'calculations': result.get('metadata', {}).get('calculation_results', None),
+                'context_documents': result.get('context_documents')
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'answer': 'I apologize, but I encountered an error processing your query. Please try rephrasing your question.',
+                'metadata': {'error_type': type(e).__name__}
+            }
+    
+    async def batch_process_queries(self, queries: List[str], user_id: str) -> List[Dict[str, Any]]:
+        """Process multiple queries in batch"""
+        
+        results = []
+        for query in queries:
+            result = await self.handle_user_query(query, user_id)
+            results.append({
+                'query': query,
+                'response': result
+            })
+        
+        return results
 
     async def process_excel_file(
         self,

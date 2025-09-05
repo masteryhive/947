@@ -8,6 +8,7 @@ from src.ai_agent.llm_service import GeminiLLMService
 from src.schemas.chat_schemas import QueryType, QueryClassification
 import json
 import re
+import pandas as pd
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime as dt
 from uuid import UUID
@@ -16,7 +17,6 @@ from src.config.config_helper import Configuration
 from ..config.logger import Logger
 
 logger = Logger(__name__)
-prompt_settings = Configuration().get_config('prompt')['agent_templates']
 
 class AgenticRAGService:
     def __init__(self):
@@ -89,7 +89,8 @@ class AgenticRAGService:
                 'documents_used': len(processed_docs),
                 'search_params': search_params,
                 'metadata': response.get('metadata', {}),
-                'confidence': classification.confidence
+                'confidence': classification.confidence,
+                'context_documents': context_documents
             }
             
         except Exception as e:
@@ -235,13 +236,46 @@ class AgenticRAGService:
             search_params['limit'] = 100
             search_params['similarity_threshold'] = 0.05
         
-        # Add entity-based filters
+        # Add entity-based filters with validation
         if classification.entities.get('policy_numbers'):
-            search_params['filters']['policy_number'] = classification.entities['policy_numbers'][0]
+            policy_numbers = classification.entities['policy_numbers']
+            if isinstance(policy_numbers, list) and policy_numbers:
+                # Filter out invalid policy numbers
+                valid_policies = [
+                    pn for pn in policy_numbers 
+                    if isinstance(pn, str) and len(pn) >= 3 and pn.lower() not in [
+                        'which', 'insured', 'party', 'highest', 'lowest', 'treaty'
+                    ]
+                ]
+                if valid_policies:
+                    if len(valid_policies) == 1:
+                        search_params['filters']['policy_number'] = valid_policies[0]
+                    else:
+                        search_params['filters']['policy_numbers'] = valid_policies
         
-        # Add numerical filters
+        # Add numerical filters with validation
         if classification.numerical_filters.get('min_amount'):
-            search_params['filters']['min_sum_insured'] = classification.numerical_filters['min_amount']
+            try:
+                min_amount = float(classification.numerical_filters['min_amount'])
+                search_params['filters']['min_sum_insured'] = min_amount
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid min_amount: {classification.numerical_filters.get('min_amount')}")
+        
+        if classification.numerical_filters.get('max_amount'):
+            try:
+                max_amount = float(classification.numerical_filters['max_amount'])
+                search_params['filters']['max_sum_insured'] = max_amount
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid max_amount: {classification.numerical_filters.get('max_amount')}")
+        
+        # Add date filters with validation
+        if classification.date_filters.get('year'):
+            try:
+                year = int(classification.date_filters['year'])
+                if 2020 <= year <= 2030:  # Reasonable year range
+                    search_params['filters']['period_year'] = year
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid year: {classification.date_filters.get('year')}")
         
         return search_params
     

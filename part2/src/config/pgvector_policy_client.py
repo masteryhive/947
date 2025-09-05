@@ -377,24 +377,103 @@ class PostgresVectorClient:
         if filters:
             for key, value in filters.items():
                 param_count += 1
+                
                 if key == 'user_id':
                     # Updated to use policy_metadata instead of metadata
                     where_conditions.append(f"(policy_metadata->>'user_id') = ${param_count}")
                     params.append(str(value))
+                    
                 elif key == 'insured_name':
                     where_conditions.append(f"insured_name ILIKE ${param_count}")
                     params.append(f"%{value}%")
+                    
                 elif key == 'policy_number':
-                    where_conditions.append(f"policy_number = ${param_count}")
-                    params.append(value)
+                    # Handle both single policy number and list of policy numbers
+                    if isinstance(value, list):
+                        if value:  # Only add condition if list is not empty
+                            # Filter out invalid policy numbers (common words)
+                            valid_policies = [
+                                p for p in value 
+                                if len(str(p)) >= 3 and str(p).lower() not in [
+                                    'which', 'insured', 'party', 'highest', 'lowest', 
+                                    'treaty', 'the', 'has', 'with', 'show', 'me', 'all'
+                                ]
+                            ]
+                            if valid_policies:
+                                placeholders = ','.join([f'${param_count + i}' for i in range(len(valid_policies))])
+                                where_conditions.append(f"policy_number = ANY(ARRAY[{placeholders}])")
+                                params.extend([str(p) for p in valid_policies])
+                                param_count += len(valid_policies) - 1
+                            else:
+                                param_count -= 1  # Revert param_count since we didn't add a condition
+                        else:
+                            param_count -= 1  # Revert param_count since we didn't add a condition
+                    else:
+                        where_conditions.append(f"policy_number = ${param_count}")
+                        params.append(str(value))
+                        
+                elif key == 'policy_numbers':  # Handle the plural version
+                    if isinstance(value, list) and value:
+                        # Filter out invalid policy numbers (common words)
+                        valid_policies = [
+                            p for p in value 
+                            if len(str(p)) >= 3 and str(p).lower() not in [
+                                'which', 'insured', 'party', 'highest', 'lowest', 
+                                'treaty', 'the', 'has', 'with', 'show', 'me', 'all'
+                            ]
+                        ]
+                        if valid_policies:
+                            placeholders = ','.join([f'${param_count + i}' for i in range(len(valid_policies))])
+                            where_conditions.append(f"policy_number = ANY(ARRAY[{placeholders}])")
+                            params.extend([str(p) for p in valid_policies])
+                            param_count += len(valid_policies) - 1
+                        else:
+                            param_count -= 1  # Revert param_count since we didn't add a condition
+                    else:
+                        param_count -= 1  # Revert param_count since we didn't add a condition
+                        
                 elif key == 'min_sum_insured':
                     where_conditions.append(f"sum_insured >= ${param_count}")
-                    params.append(value)
+                    params.append(float(value))
+                    
+                elif key == 'max_sum_insured':
+                    where_conditions.append(f"sum_insured <= ${param_count}")
+                    params.append(float(value))
+                    
+                elif key == 'min_premium':
+                    where_conditions.append(f"premium >= ${param_count}")
+                    params.append(float(value))
+                    
+                elif key == 'max_premium':
+                    where_conditions.append(f"premium <= ${param_count}")
+                    params.append(float(value))
+                    
                 elif key == 'date_range':
-                    param_count += 1
-                    where_conditions.append(f"insurance_period_start_date >= ${param_count} AND insurance_period_end_date <= ${param_count + 1}")
-                    params.extend([value['start'], value['end']])
-                    param_count += 1
+                    if isinstance(value, dict) and 'start' in value and 'end' in value:
+                        param_count += 1
+                        where_conditions.append(f"insurance_period_start_date >= ${param_count} AND insurance_period_end_date <= ${param_count + 1}")
+                        params.extend([value['start'], value['end']])
+                        param_count += 1
+                    else:
+                        param_count -= 1  # Revert param_count since we didn't add a condition
+                        
+                elif key == 'period_year':
+                    # Filter by specific year
+                    where_conditions.append(f"EXTRACT(YEAR FROM insurance_period_start_date) = ${param_count}")
+                    params.append(int(value))
+                    
+                elif key == 'min_treaty_ppn':
+                    where_conditions.append(f"treaty_ppn >= ${param_count}")
+                    params.append(float(value))
+                    
+                elif key == 'max_treaty_ppn':
+                    where_conditions.append(f"treaty_ppn <= ${param_count}")
+                    params.append(float(value))
+                    
+                else:
+                    # Skip unknown filter keys
+                    param_count -= 1
+                    logger.warning(f"Unknown filter key: {key}")
         
         where_clause = " AND ".join(where_conditions)
         search_query = f'''
@@ -408,32 +487,47 @@ class PostgresVectorClient:
             LIMIT $2
         '''
         
-        async with db_manager.get_connection() as conn:
-            rows = await conn.fetch(search_query, *params)
-
-            results = []
-            for row in rows:
-                result = dict(row)
-                result['id'] = str(result['id'])
-                result.pop('content_vector')
+        try:
+            async with db_manager.get_connection() as conn:
+                logger.debug(f"Executing search query with {len(params)} parameters")
+                logger.debug(f"Query: {search_query}")
+                logger.debug(f"Params: {params}")
                 
-                # Keep only metadata
-                result['policy_metadata'] = json.loads(result['policy_metadata']) if result['policy_metadata'] else {}
-                result['policy_metadata'].pop('user_id')
+                rows = await conn.fetch(search_query, *params)
 
-                # Remove top-level duplicate policy fields
-                redundant_keys = [
-                    "policy_number", "insured_name", "sum_insured", "premium",
-                    "own_retention_ppn", "own_retention_sum_insured", "own_retention_premium",
-                    "treaty_ppn", "treaty_sum_insured", "treaty_premium",
-                    "insurance_period_start_date", "insurance_period_end_date",
-                    "created_at", "updated_at"
-                ]
-                for key in redundant_keys:
-                    result.pop(key, None)
-                results.append(result)
+                results = []
+                for row in rows:
+                    result = dict(row)
+                    result['id'] = str(result['id'])
+                    result.pop('content_vector', None)
+                    
+                    # Keep only metadata
+                    if result.get('policy_metadata'):
+                        result['policy_metadata'] = json.loads(result['policy_metadata']) if isinstance(result['policy_metadata'], str) else result['policy_metadata']
+                        result['policy_metadata'].pop('user_id', None)
+                    else:
+                        result['policy_metadata'] = {}
 
-            return results
+                    # Remove top-level duplicate policy fields
+                    redundant_keys = [
+                        "policy_number", "insured_name", "sum_insured", "premium",
+                        "own_retention_ppn", "own_retention_sum_insured", "own_retention_premium",
+                        "treaty_ppn", "treaty_sum_insured", "treaty_premium",
+                        "insurance_period_start_date", "insurance_period_end_date",
+                        "created_at", "updated_at"
+                    ]
+                    for key in redundant_keys:
+                        result.pop(key, None)
+                    results.append(result)
+
+                logger.info(f"Found {len(results)} policies matching search criteria")
+                return results
+                
+        except Exception as e:
+            logger.error(f"Error in search_policies: {e}")
+            logger.error(f"Query: {search_query}")
+            logger.error(f"Params: {params}")
+            raise
 
     
     async def get_policy_by_id(self, policy_id: str) -> Optional[Dict[str, Any]]:

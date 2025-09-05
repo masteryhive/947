@@ -7,6 +7,7 @@ from src.exceptions.custom_exception import (
 )
 from src.exceptions.custom_exception_handler import ExceptionHandlers, AppException
 from src.chat.controller import chat
+from src.monitor.controller import monitor
 
 
 app = FastAPI(
@@ -37,3 +38,4 @@ def home():
     return {"message": "Welcome to Insurance RAG API!"}
 
 app.include_router(chat.chat_router)
+app.include_router(monitor.monitor_router)

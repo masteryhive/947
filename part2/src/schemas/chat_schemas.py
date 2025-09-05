@@ -73,8 +73,6 @@ class RetreiveSchema(BaseSchema):
 
 class ChatIn(BaseModel):
     question: str
-    user_id: str
-    session_id: Optional[Union[UUID, str]] = Field(default=None, hidden=True)
 
 class UpdateSessionRequest(BaseModel):
     title: str

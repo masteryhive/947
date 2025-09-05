@@ -15,15 +15,15 @@ chat_router = APIRouter(prefix="/chats", tags=["Chat Session"])
     status_code=status.HTTP_200_OK
 )
 async def ask_agent(
-    request: Request,
+    chat: chat_schemas.ChatIn,
     user_id: Annotated[Union[uuid.UUID, str], Path(..., title="User ID to query")],
     chat_service: ChatService = Depends(AppUtil.get_chat_service)
-    ):
-    result = await chat_service.ask(request, user_id)
+):
+    result = await chat_service.query(chat, user_id)
     return ApiResponse(
-            message="Chat processed successfully",
-            data=result
-        )
+        message="Chat processed successfully",
+        data=result
+    )
 
 @chat_router.post(
     '/ingest-excel/{user_id}',

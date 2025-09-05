@@ -34,18 +34,22 @@ logger = Logger(__name__)
 class ChatService:
     def __init__(self):
         self.vector_service = PostgresVectorClient()
-        pass
 
     async def query(
-        request: Request,
+        self,
+        chat: chat_schemas.ChatIn,
         user_id
     ):
-        pass
-        # try:
-        #     logger.info("Chat processed successfully")
-        # except Exception as ex:
-        #     logger.error(f"Processing Sessions -> API v1/chats/session/ask-agent/: {ex}")
-        #     raise InternalServerException()
+        try:
+            print(user_id)
+            print(chat)
+            await self.vector_service.search_policies(
+                query=chat.question
+            )
+            logger.info("Chat processed successfully")
+        except Exception as ex:
+            logger.error(f"Processing Sessions -> API v1/chats/session/ask-agent/: {ex}")
+            raise InternalServerException()
 
         # return {
         #     "content": result.content if result is not None else None

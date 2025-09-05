@@ -14,13 +14,12 @@ logger = Logger(__name__)
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
-
     logger.info("Starting Insurance RAG API...")
 
     try:
         await db_manager.create_pool()
         vector_service = PostgresVectorClient()
-        await vector_service.create_tables()
+        await vector_service.recreate_table()
 
         # Initialize services    
         # rag_service = AgenticRAGService()

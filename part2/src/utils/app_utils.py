@@ -62,6 +62,10 @@ class AppUtil:
         return text
     
     @staticmethod
+    def remove_duplicates_preserve_order(duplicate_list):
+        return list(dict.fromkeys(duplicate_list))
+    
+    @staticmethod
     def _extract_chat_input(chat_input):
         session_id = chat_input.get('content', {}).get("session_id")
         content = chat_input['content']

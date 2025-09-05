@@ -69,7 +69,6 @@ class ChatService:
         # except Exception as ex:
         #     logger.error(f"Insertion performed -> v1/chat/insert-excel/: {ex}")
         #     raise InternalServerException()
-
         return result
 
     async def process_excel_file(
@@ -84,37 +83,77 @@ class ChatService:
         errors = []
         records_processed = 0
         records_inserted = 0
+        records_updated = 0
+        duplicate_policies = []
 
-        df = pd.read_excel(BytesIO(file_content))
-        df_cleaned = self._validate_and_clean_data(df, errors)
-        records_processed = len(df)
-        # Convert to policy objects
-        policies = []
-        for index, row in df_cleaned.iterrows():
-            try:
-                policy_data = row.to_dict()
-                policy_data["user_id"] = user_id
-                policy_schema = chat_schemas.InsurancePolicySchema(**policy_data)
-                policies.append(policy_schema.dict())
-            except Exception as e:
-                errors.append(f"Row {index + 2}: {str(e)}")
-        
-        for policy_data in policies:
-            # try:
-            await self.vector_service.insert_policy(policy_data)
-                # records_inserted += 1
-            # except Exception as e:
-            #     errors.append(
-            #         f"Failed to insert policy {policy_data.get('policy_number', 'unknown')}: {str(e)}"
-            #     )
+        try:
+            df = pd.read_excel(BytesIO(file_content))
+            df_cleaned = self._validate_and_clean_data(df, errors)
+            records_processed = len(df_cleaned) if df_cleaned is not None else 0
+
+            if df_cleaned is None or df_cleaned.empty:
+                return {
+                    'message': 'No valid records found to process',
+                    'records_processed': 0,
+                    'records_inserted': 0,
+                    'records_updated': 0,
+                    'duplicate_policies': [],
+                    'errors': errors,
+                    'processing_time': (datetime.now() - start_time).total_seconds(),
+                    'ingestion_id': ingestion_id
+                }
+            
+            # Convert to policy objects
+            policies = []
+            for index, row in df_cleaned.iterrows():
+                try:
+                    policy_data = row.to_dict()
+                    policy_data["user_id"] = user_id
+                    policy_schema = chat_schemas.InsurancePolicySchema(**policy_data)
+                    policies.append(policy_schema.dict())
+                except Exception as e:
+                    errors.append(f"Row {index + 2}: {str(e)}")
+            
+            for policy_data in policies:
+                try:
+                    await self.vector_service.insert_policy(policy_data)
+                    records_inserted += 1
+                    # Alternative - use the check-then-insert method
+                    policy_id, is_new = await self.vector_service.insert_or_update_policy(policy_data)
+                    if is_new:
+                        records_inserted += 1
+                    else:
+                        records_updated += 1
+                        duplicate_policies.append(policy_data['policy_number'])
+
+                except Exception as e:
+                    errors.append(
+                        f"Failed to insert policy {policy_data.get('policy_number', 'unknown')}: {str(e)}"
+                    )
+        except Exception as e:
+            error_msg = f"Failed to process Excel file: {str(e)}"
+            errors.append(error_msg)
+            logger.error(error_msg)
+            return {
+                'message': error_msg,
+                'records_processed': 0,
+                'records_inserted': 0,
+                'records_updated': 0,
+                'duplicate_policies': [],
+                'errors': errors,
+                'processing_time': (datetime.now() - start_time).total_seconds(),
+                'ingestion_id': ingestion_id
+            }
         
         processing_time = (datetime.now() - start_time).total_seconds()
         
         return {
-            'message': f'Successfully processed {records_inserted} out of {records_processed} records',
+            'message': f'Successfully processed {records_inserted} records ({records_updated} updated)',
             'records_processed': records_processed,
             'records_inserted': records_inserted,
-            'errors': errors,
+            'records_updated': records_updated,
+            'duplicate_policies': AppUtil.remove_duplicates_preserve_order(duplicate_policies),
+            'errors': AppUtil.remove_duplicates_preserve_order(errors),
             'processing_time': round(processing_time, 2),
             'ingestion_id': ingestion_id
         }

@@ -106,7 +106,7 @@ SAMPLE QUESTIONS YOUR SYSTEM SHOULD HANDLE:
 EVALUATION CRITERIA:
 - Code quality and organization
 - Production readiness features
-- Error handling robustness  
+- Error handling robustness
 - LLM integration effectiveness
 - Database design and performance
 - API design and documentation

@@ -44,7 +44,7 @@ CORE FEATURES TO IMPLEMENT:
     - Store in PostgreSQL
     - Return ingestion summary and errors
 
-2. AGENTIC RAG QUERY API  
+2. AGENTIC RAG QUERY API
     POST /query
     - Accept natural language questions
     - Use LangGraph for multi-step reasoning
@@ -78,7 +78,7 @@ PRODUCTION REQUIREMENTS:
 
 ✅ Security
 - Input sanitization
-- SQL injection prevention  
+- SQL injection prevention
 - API authentication (basic auth minimum)
 - Environment variable configuration
 

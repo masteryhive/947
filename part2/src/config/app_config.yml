@@ -1,0 +1,27 @@
+logger:
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  level: INFO
+
+llm:
+  gemini:
+    provider: gemini_api
+    models:
+      gemini_20: gemini-2.0-flash-lite
+
+vdb:
+  content_payload_key: page_content
+  metadata_payload_key: document_metadata
+  score_key: value
+  indexing_threshold: 0
+  max_attempts: 4
+  wait_time_seconds: 0.7
+  default_segment_number: 5
+  batch_size: 8
+  is_batch: false
+  limit: 2
+  device: cpu
+
+prompt:
+  memory_templates:
+    fact_retrieval_system_prompt: |
+      You are a {name} which controls the memory of a system.

@@ -81,6 +81,7 @@ class ChatService:
             result = await self.rag_service.process_query(query, user_id)
             return {
                 'success': True,
+                'question': query,
                 'answer': result['answer'],
                 'metadata': {
                     'query_type': result['classification']['query_type'],

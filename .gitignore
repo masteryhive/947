@@ -34,6 +34,7 @@ MANIFEST
 **data2
 **data3
 **test2.py
+**test.py
 **.ipynb
 
 # PyInstaller

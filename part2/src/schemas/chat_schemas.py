@@ -3,6 +3,8 @@ from typing import List, Dict
 from datetime import datetime as dt
 from uuid import UUID, uuid4
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 from src.schemas import monitor_schemas, chat_schemas, search_schema
 from typing import Optional, Union, Any, List, Literal, Dict
 from datetime import datetime as dt, timezone, time
@@ -33,12 +35,31 @@ class InsurancePolicySchema(BaseModel):
     treaty_premium: Optional[float] = Field(None, description="Treaty premium")
     insurance_period_start_date: dt = Field(..., description="Insurance period start date")
     insurance_period_end_date: dt = Field(..., description="Insurance period end date")
+    user_id: str = Field(..., description="User Id")
     
     @validator('insurance_period_end_date')
     def validate_end_date(cls, v, values):
         if 'insurance_period_start_date' in values and v <= values['insurance_period_start_date']:
             raise ValueError('End date must be after start date')
         return v
+    
+class QueryType(Enum):
+    SPECIFIC_POLICY = "specific_policy"
+    AGGREGATE_ANALYSIS = "aggregate_analysis"
+    COMPARISON = "comparison" 
+    CALCULATION = "calculation"
+    GENERAL_INFO = "general_info"
+    CLAIMS_ANALYSIS = "claims_analysis"
+
+@dataclass
+class QueryClassification:
+    query_type: QueryType
+    entities: List[str]
+    numerical_filters: Dict[str, Any]
+    date_filters: Dict[str, Any]
+    requires_calculation: bool
+    calculation_type: Optional[str] = None
+    confidence: float = 0.0
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Natural language question")
@@ -50,7 +71,6 @@ class QueryResponse(BaseModel):
     answer: str = Field(..., description="Generated answer")
     sources: List[Dict[str, Any]] = Field(..., description="Source documents used")
     confidence_score: Optional[float] = Field(None, description="Confidence in the answer")
-    processing_time: float = Field(..., description="Time taken to process query")
     query_id: str = Field(..., description="Unique query identifier")
 
 class IngestionRequest(BaseModel):
@@ -72,8 +92,6 @@ class RetreiveSchema(BaseSchema):
 
 class ChatIn(BaseModel):
     question: str
-    user_id: str
-    session_id: Optional[Union[UUID, str]] = Field(default=None, hidden=True)
 
 class UpdateSessionRequest(BaseModel):
     title: str

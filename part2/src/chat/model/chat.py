@@ -39,7 +39,7 @@ class InsurancePolicy(Base):
         Index('idx_insured_name', insured_name),
         Index('idx_insurance_period', insurance_period_start_date, insurance_period_end_date),
         Index('idx_content_vector', content_vector, postgresql_using='ivfflat', postgresql_ops={'content_vector': 'vector_cosine_ops'}),
-        Index('idx_policy_metadata', policy_metadata, postgresql_using='gin'), 
+        Index('idx_policy_metadata', policy_metadata, postgresql_using='gin'),
     )
 
 class DocumentEmbedding(Base):
@@ -52,7 +52,7 @@ class DocumentEmbedding(Base):
     document_type = Column(String(50))
     user_id = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
-
+    
     __table_args__ = (
         Index('idx_document_embedding', embedding, postgresql_using='ivfflat', postgresql_ops={'embedding': 'vector_cosine_ops'}),
         Index('idx_document_metadata', document_metadata, postgresql_using='gin'),

@@ -10,6 +10,8 @@ from src.exceptions.custom_exception import (
     UnsupportedFileFormatException,
     ChatNotFoundException,
 )
+from src.config.pgvector_policy_client import PostgresVectorClient
+from src.utils.database_manager import db_manager
 from src.utils.app_notification_message import NotificationMessage
 from src.utils.app_utils import  AppUtil
 from src.config.settings import settings
@@ -21,7 +23,7 @@ logger = Logger(__name__)
 
 class MonitorService:
     def __init__(self):
-        pass
+        self.vector_service = PostgresVectorClient()
 
     async def health_check(self):
         try:
@@ -35,7 +37,7 @@ class MonitorService:
                 pass
             
             # Check embedding model
-            model_loaded = hasattr(vector_service, 'model') and vector_service.model is not None
+            model_loaded = hasattr(self.vector_service, 'model') and self.vector_service.model is not None
             status = "healthy" if db_connected and model_loaded else "degraded"
             logger.info("Request processed successfully")
 
@@ -57,11 +59,12 @@ class MonitorService:
     
     async def get_metrics(self):
         try:
-            db_stats = await vector_service.get_database_stats()
+            db_stats = await self.vector_service.get_database_stats()
+
             return monitor_schemas.MetricsResponse(
                 total_policies=db_stats['total_policies'],
                 total_embeddings=db_stats['total_policies'],
-                database_size_mb=float(db_stats.get('database_size', '0MB').replace('MB', ''))
+                database_size_mb=db_stats.get('database_size', '0MB').replace('MB', '')
             ).model_dump()
         except Exception as ex:
             logger.error(f"Processing Request -> API v1/monitor/metrics/: {ex}")
@@ -69,7 +72,7 @@ class MonitorService:
     
     async def get_data_summary(self):
         try:
-            db_stats = await vector_service.get_database_stats()
+            db_stats = await self.vector_service.get_database_stats()
             return db_stats
         except Exception as ex:
             logger.error(f"Processing Request -> API v1/monitor/data-summary/: {ex}")

@@ -1,4 +1,4 @@
-.PHONY: initial program setup, start_dev start_prod docker_up docker_prod logs
+.PHONY: initial program setup, start_dev start_prod run_postgresdb docker_up docker_prod logs
 
 start_dev:
 	@echo "Running app in development.."
@@ -7,6 +7,10 @@ start_dev:
 start_prod:
 	@echo "Running app in production..."
 	poetry run gunicorn -w 2 -k uvicorn.workers.UvicornWorker src.main:app -b 0.0.0.0:8088
+
+run_postgresdb:
+	@echo "Starting PostgreSQL database..."
+	docker-compose -f docker-compose.yml up
 
 docker_up:
 	@echo "Starting Docker Compose (dev/prod combined)..."

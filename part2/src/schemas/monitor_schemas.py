@@ -12,4 +12,4 @@ class HealthResponse(BaseModel):
 class MetricsResponse(BaseModel):
     total_policies: int
     total_embeddings: int
-    database_size_mb: float
+    database_size_mb: str
